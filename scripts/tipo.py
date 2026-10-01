@@ -15,7 +15,10 @@ from modules.processing import (
     StableDiffusionProcessingTxt2Img,
     fix_seed,
 )
-from modules.prompt_parser import parse_prompt_attention
+try:
+    from modules.prompt_parser import parse_prompt_attention
+except ImportError:
+    from backend.text_processing.parsing import parse_prompt_attention
 from modules.scripts import OnComponent, basedir
 from modules.shared import opts
 from modules.ui_components import ToolButton
@@ -681,6 +684,9 @@ class TIPOScript(scripts.Script):
         if process_timing != PROCESSING_TIMING["AFTER"]:
             return
 
+        if getattr(p, "_ad_inner", False) or hasattr(p, "_tipo_processed_owner"):
+            return
+
         self.original_prompt = p.all_prompts
         self.original_hr_prompt = getattr(p, "all_hr_prompts", None)
         aspect_ratio = p.width / p.height
@@ -719,6 +725,9 @@ class TIPOScript(scripts.Script):
             else:
                 p.all_hr_prompts = new_all_prompts
         p.all_prompts = new_all_prompts
+        # ADetailer replays callbacks on shallow copies of the outer processing
+        # object. Keep this marker on p so those copies inherit it as well.
+        p._tipo_processed_owner = id(p)
 
     def before_process(
         self,
@@ -737,6 +746,9 @@ class TIPOScript(scripts.Script):
         if process_timing != PROCESSING_TIMING["BEFORE"]:
             return
 
+        if getattr(p, "_ad_inner", False) or hasattr(p, "_tipo_processed_owner"):
+            return
+
         self.original_prompt = p.prompt
         self.original_hr_prompt = p.hr_prompt
         aspect_ratio = p.width / p.height
@@ -748,6 +760,13 @@ class TIPOScript(scripts.Script):
 
         args = list(args)
         p.prompt = self._process(p.prompt, args.pop(), aspect_ratio, seed, *args)
+        p._tipo_processed_owner = id(p)
+
+    def postprocess(self, p, processed, *args):
+        # ADetailer also calls postprocess on a copy before each correction.
+        # Only the real end of the outer job may clear the inference guard.
+        if getattr(p, "_tipo_processed_owner", None) == id(p):
+            del p._tipo_processed_owner
 
     def prompt_gen_only(self, *args):
         args = list(args)
